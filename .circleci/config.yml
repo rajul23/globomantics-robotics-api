@@ -58,6 +58,23 @@ jobs:
       - store_test_results:
           path: test-results
 
+  test-e2e:
+    docker:
+      - image: cimg/node:18.19
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: Run Playwright E2E Tests
+          command: |
+            mkdir test-results
+            pnpm run serve &
+            TESTFILES=$(circleci tests glob "specs/e2e/**/*.spec.ts")
+            echo "$TESTFILES" | circleci tests run --command="xargs pnpm playwright test --config=playwright.config.ci.ts --reporter=junit" --verbose --split-by=timings
+      - store_test_results:
+          path: test-results
+
   build:
     docker:
       - image: cimg/node:18.19
@@ -109,10 +126,7 @@ jobs:
 workflows:
   build-test-deploy:
     jobs:
-      # Install dependencies first
       - install-deps
-
-      # Fan out: lint and tests run in parallel
       - lint:
           requires:
             - install-deps
@@ -122,23 +136,21 @@ workflows:
       - test-integration:
           requires:
             - install-deps
-
-      # Fan in: build requires all tests to pass
+      - test-e2e:
+          requires:
+            - install-deps
       - build:
           requires:
             - lint
             - test-unit
             - test-integration
-
-      # Deploy staging on all branches
+            - test-e2e
       - deploy-staging:
           requires:
             - build
           filters:
             branches:
               ignore: main
-
-      # Production: only on main, with manual approval
       - hold-for-approval:
           type: approval
           requires:
@@ -146,7 +158,6 @@ workflows:
           filters:
             branches:
               only: main
-
       - deploy-production:
           requires:
             - hold-for-approval
