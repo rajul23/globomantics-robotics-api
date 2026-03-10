@@ -1,155 +1,65 @@
 version: 2.1
 
 jobs:
-  install-deps:
+  build-and-test:
     docker:
       - image: cimg/node:18.19
+    resource_class: small
     steps:
       - checkout
+
+      # Restore npm cache if available
       - restore_cache:
           keys:
-            - v1-npm-deps-{{ checksum "package-lock.json" }}
-      - run: npm ci
+            - npm-cache-{{ checksum "package-lock.json" }}
+            - npm-cache-
+
+      - run:
+          name: Install Dependencies
+          command: npm ci
+
+      # Introduce an intentional error:
+      # This package does NOT exist in node_modules and will cause npx to fail.
+      - run:
+          name: Run Security Audit
+          command: npx audit-ci --moderate  # This package isn't installed
+
+      # Save dependencies cache
       - save_cache:
-          key: v1-npm-deps-{{ checksum "package-lock.json" }}
+          key: npm-cache-{{ checksum "package-lock.json" }}
           paths:
-            - node_modules
-      - persist_to_workspace:
-          root: .
-          paths:
+            - ~/.npm
             - node_modules
 
-  lint:
-    docker:
-      - image: cimg/node:18.19
-    steps:
-      - checkout
-      - attach_workspace:
-          at: .
       - run:
-          name: Run Linting
-          command: npm run lint
+          name: Run Tests
+          command: npm test
 
-  test-unit:
-    docker:
-      - image: cimg/node:18.19
-    steps:
-      - checkout
-      - attach_workspace:
-          at: .
       - run:
-          name: Run Unit Tests
-          command: npm test -- --testPathPattern=unit --passWithNoTests
-      - store_test_results:
-          path: test-results
-      - store_artifacts:
-          path: coverage
+          name: Build Application
+          command: npm run build
 
-  test-integration:
-    docker:
-      - image: cimg/node:18.19
-    steps:
-      - checkout
-      - attach_workspace:
-          at: .
-      - run:
-          name: Run Integration Tests
-          command: npm test -- --testPathPattern=integration --passWithNoTests
+      # Store JUnit test reports separately (optional)
       - store_test_results:
           path: test-results
 
-  build:
-    docker:
-      - image: cimg/node:18.19
-    steps:
-      - checkout
-      - attach_workspace:
-          at: .
-      - run: npm run build
+      # Create a clean ZIP artifact
+      - run:
+          name: Package artifacts as ZIP
+          command: |
+            mkdir -p artifacts
+            cp -R dist artifacts/
+            cp -R coverage artifacts/
+            cp -R test-results artifacts/
+            cd artifacts
+            zip -r build-bundle.zip .
+
+      # Upload the single ZIP artifact
       - store_artifacts:
-          path: dist
-          destination: build
-
-  deploy-staging:
-    docker:
-      - image: cimg/node:18.19
-    steps:
-      - checkout
-      - attach_workspace:
-          at: .
-      - run:
-          name: Deploy to Staging
-          command: |
-            echo "Deploying Globomantics API to staging..."
-            echo "Environment: staging.globomantics.com"
-            echo "Version: $CIRCLE_SHA1"
-            echo "Deployment complete!"
-
-  approve-production:
-    docker:
-      - image: cimg/base:current
-    steps:
-      - run: echo "Production deployment approved"
-
-  deploy-production:
-    docker:
-      - image: cimg/node:18.19
-    steps:
-      - checkout
-      - attach_workspace:
-          at: .
-      - run:
-          name: Deploy to Production
-          command: |
-            echo "Deploying Globomantics API to PRODUCTION..."
-            echo "Environment: api.globomantics.com"
-            echo "Version: $CIRCLE_SHA1"
-            echo "PRODUCTION deployment complete!"
+          path: artifacts/build-bundle.zip
+          destination: build-bundle.zip
 
 workflows:
-  build-test-deploy:
+  build:
     jobs:
-      # Install dependencies first
-      - install-deps
-
-      # Fan out: lint and tests run in parallel
-      - lint:
-          requires:
-            - install-deps
-      - test-unit:
-          requires:
-            - install-deps
-      - test-integration:
-          requires:
-            - install-deps
-
-      # Fan in: build requires all tests to pass
-      - build:
-          requires:
-            - lint
-            - test-unit
-            - test-integration
-
-      # Deploy staging on all branches
-      - deploy-staging:
-          requires:
-            - build
-          filters:
-            branches:
-              ignore: main
-
-      # Production: only on main, with manual approval
-      - hold-for-approval:
-          type: approval
-          requires:
-            - build
-          filters:
-            branches:
-              only: main
-
-      - deploy-production:
-          requires:
-            - hold-for-approval
-          filters:
-            branches:
-              only: main
+      - build-and-test
